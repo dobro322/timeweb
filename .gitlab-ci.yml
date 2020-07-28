@@ -1,0 +1,168 @@
+image: alpine:latest
+
+variables:
+  DOCKER_DRIVER: overlay2
+  ROLLOUT_RESOURCE_TYPE: deployments
+  DOCKER_TLS_CERTDIR: ""
+  
+  ### Postgres block
+  POSTGRES_ENABLED: "false"
+  
+  ### CI/CD ARGS
+  STAGING_ENABLED: "true"
+  
+  ###Kubernetes
+  KUBE_NAMESPACE: $CI_PROJECT_PATH_SLUG
+
+stages:
+  - build
+  - review
+  - staging
+  - production
+  - cleanup
+
+build:
+  stage: build
+  image: "registry.gitlab.com/gitlab-org/cluster-integration/auto-build-image:v0.2.2"
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+  services:
+    - docker:19.03.8-dind
+  script:
+    - |
+      if [[ -z "$CI_COMMIT_TAG" ]]; then
+        export CI_APPLICATION_REPOSITORY=${CI_APPLICATION_REPOSITORY:-$CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG}
+        export CI_APPLICATION_TAG=${CI_APPLICATION_TAG:-$CI_COMMIT_SHA}
+      else
+        export CI_APPLICATION_REPOSITORY=${CI_APPLICATION_REPOSITORY:-$CI_REGISTRY_IMAGE}
+        export CI_APPLICATION_TAG=${CI_APPLICATION_TAG:-$CI_COMMIT_TAG}
+      fi
+    - /build/build.sh
+  rules:
+    - if: '$CI_COMMIT_TAG || $CI_COMMIT_BRANCH'
+
+
+.auto-deploy:
+  image: "registry.gitlab.com/gitlab-org/cluster-integration/auto-deploy-image:latest"
+
+
+review:
+  extends: .auto-deploy
+  stage: review
+  script:
+    - auto-deploy check_kube_domain
+    - auto-deploy download_chart
+    - auto-deploy ensure_namespace
+    - auto-deploy initialize_tiller
+    - auto-deploy create_secret
+    - auto-deploy deploy
+    - auto-deploy persist_environment_url
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    url: https://$CI_PROJECT_ID-$CI_ENVIRONMENT_SLUG.$KUBE_INGRESS_BASE_DOMAIN
+    on_stop: stop_review
+  artifacts:
+    paths: [environment_url.txt]
+  rules:
+    - if: '$CI_KUBERNETES_ACTIVE == null || $CI_KUBERNETES_ACTIVE == ""'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "master" || $CI_COMMIT_BRANCH == "dev"'
+      when: never
+    - if: '$REVIEW_DISABLED'
+      when: never
+    - if: '$CI_COMMIT_TAG || $CI_COMMIT_BRANCH'
+
+
+stop_review:
+  extends: .auto-deploy
+  stage: cleanup
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - auto-deploy initialize_tiller
+    - auto-deploy delete
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    action: stop
+  dependencies: []
+  allow_failure: true
+  rules:
+    - if: '$CI_KUBERNETES_ACTIVE == null || $CI_KUBERNETES_ACTIVE == ""'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "master" || $CI_COMMIT_BRANCH == "dev"'
+      when: never
+    - if: '$REVIEW_DISABLED'
+      when: never
+    - if: '$CI_COMMIT_TAG || $CI_COMMIT_BRANCH'
+      when: manual
+
+
+staging:
+  extends: .auto-deploy
+  stage: staging
+  script:
+    - auto-deploy check_kube_domain
+    - auto-deploy download_chart
+    - auto-deploy ensure_namespace
+    - auto-deploy initialize_tiller
+    - auto-deploy create_secret
+    - auto-deploy deploy
+  environment:
+    name: staging
+    url: https://$CI_PROJECT_PATH_SLUG-dev.$KUBE_INGRESS_BASE_DOMAIN
+  rules:
+    - if: '$CI_KUBERNETES_ACTIVE == null || $CI_KUBERNETES_ACTIVE == ""'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      when: never
+    - if: '$STAGING_ENABLED && $CI_COMMIT_BRANCH == "dev"'
+
+
+.production: &production_template
+  extends: .auto-deploy
+  stage: production
+  script:
+    - auto-deploy check_kube_domain
+    - auto-deploy download_chart
+    - auto-deploy ensure_namespace
+    - auto-deploy initialize_tiller
+    - auto-deploy create_secret
+    - auto-deploy deploy
+    - auto-deploy delete canary
+    - auto-deploy delete rollout
+    - auto-deploy persist_environment_url
+  environment:
+    name: production
+    url: https://$CI_PROJECT_PATH_SLUG.$KUBE_INGRESS_BASE_DOMAIN
+  artifacts:
+    paths: [environment_url.txt]
+
+production:
+  <<: *production_template
+  rules:
+    - if: '$CI_KUBERNETES_ACTIVE == null || $CI_KUBERNETES_ACTIVE == ""'
+      when: never
+    - if: '$STAGING_ENABLED'
+      when: never
+    - if: '$CANARY_ENABLED'
+      when: never
+    - if: '$INCREMENTAL_ROLLOUT_ENABLED'
+      when: never
+    - if: '$INCREMENTAL_ROLLOUT_MODE'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "master"'
+    
+production_manual:
+  <<: *production_template
+  allow_failure: false
+  rules:
+    - if: '$CI_KUBERNETES_ACTIVE == null || $CI_KUBERNETES_ACTIVE == ""'
+      when: never
+    - if: '$INCREMENTAL_ROLLOUT_ENABLED'
+      when: never
+    - if: '$INCREMENTAL_ROLLOUT_MODE'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "master" && $STAGING_ENABLED'
+      when: manual
+    - if: '$CI_COMMIT_BRANCH == "master" && $CANARY_ENABLED'
+      when: manual

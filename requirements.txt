@@ -1,0 +1,6 @@
+marshmallow
+pymongo
+pywebcopy
+beautifulsoup4
+Flask
+Celery
