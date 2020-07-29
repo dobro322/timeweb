@@ -1,4 +1,4 @@
-from urllib import request
+from urllib import error, request
 from bs4 import BeautifulSoup
 from pywebcopy import save_webpage
 from itertools import chain
@@ -49,10 +49,15 @@ class Parser:
     def load_page(self, url):
         try:
             page = request.urlopen(url)
-            self.save_page(url)
-        except Exception:
-            print("Error while page loading")
+        except error.URLError:
+            raise Exception("Website {} not responding".format(url))
+        except Exception as e:
+            print("Error while page loading\n{}".format(e))
             return []
+        try:
+            self.save_page(url)
+        except Exception as e:
+            print("Error while page saving\n{}".format(e))
         soup = BeautifulSoup(page.read(), "html.parser")
         return self.get_links(soup, url)
 
@@ -65,7 +70,13 @@ class Parser:
                 if url in indexed_urls:
                     continue
                 indexed_urls.append(url)
-                links = self.load_page(url)
+                try:
+                    links = self.load_page(url)
+                except Exception as e:
+                    if len(urls) == 1:
+                        raise Exception("No sites were loaded")
+                    else:
+                        continue
                 temp_urls = list(set(chain(indexed_urls, links)))
             urls = temp_urls
         return urls

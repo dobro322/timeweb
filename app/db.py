@@ -5,7 +5,7 @@ import datetime
 
 db = MongoClient(os.getenv("DBURL")).parser
 tasks_collection = db.tasks
-STATES = ["CREATED", "IN PROGRESS", "COMPLETED"]
+STATES = ["CREATED", "IN PROGRESS", "COMPLETED", "FAILED"]
 
 
 def get_empty_id(collection):

@@ -26,7 +26,7 @@ def add_task():
     data = TaskSchema().loads(request.data)
     task = Task(**data).create()
     parse_website.delay(task.id)
-    return {"id": task.id}, 201
+    return TaskSchema().dumps(task), 201
 
 
 @app.route("/tasks/", methods=["GET"])
@@ -41,10 +41,7 @@ def get_task(task_id):
     if not task:
         abort(404, "No such task")
 
-    if task[0].state == "COMPLETED":
-        return TaskSchema().dumps(task[0]), 200
-    else:
-        return {"state": task[0].state}, 200
+    return TaskSchema().dumps(task[0]), 200
 
 
 @app.route("/files/<int:task_id>", methods=["GET"])
@@ -63,13 +60,17 @@ def get_zip(task_id):
 def parse_website(task_id):
     task = Task.filter_by(id=task_id)[0]
     task.update(1)
-    Parser(task.web_url, task.depth, task.id).parse()
-    task.update(2)
-    dir = "{}/app/sites/{}".format(
-        os.getcwd(),
-        task_id
-    )
-    zip_folder(task_id, dir)
+    try:
+        Parser(task.web_url, task.depth, task.id).parse()
+        task.update(2)
+        dir = "{}/app/sites/{}".format(
+            os.getcwd(),
+            task_id
+        )
+        zip_folder(dir)
+    except Exception as e:
+        print("Error while parsing site\n{}".format(e))
+        task.update(3)
 
 
 if __name__ == "__main__":
